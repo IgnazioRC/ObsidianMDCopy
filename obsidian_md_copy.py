@@ -12,18 +12,13 @@ if not getattr(_sys, 'frozen', False):
         _sys.path.insert(0, str(_shared))
 # --- end IRC shared bootstrap ---
 
-VERSION = "1.1.0"
-# obsidian_md_copy.py  v1.1.0
+VERSION = "1.1.1"
+# obsidian_md_copy.py  v1.1.1
 # Copia selettiva di file Markdown da una cartella sorgente (es. Dropbox)
 # verso la vault Obsidian su iCloud Drive.
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-# ── path_widgets (modulo condiviso) ──────────────────────────────────────────
-import sys as _sys
-_sys.path.insert(0, str(__import__('pathlib').Path.home() /
-    "Library/CloudStorage/Dropbox/Documenti_IRC/Python/shared"))
-# ─────────────────────────────────────────────────────────────────────────────
 from path_widgets import PathVar, PathEntry
 import json
 import hashlib
@@ -52,9 +47,16 @@ ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
 # ---------------------------------------------------------------------------
 # Configurazione
 # ---------------------------------------------------------------------------
-APP_NAME    = "ObsidianMDCopy"
-CONFIG_DIR  = Path.home() / "Library" / "CloudStorage" / "Dropbox" / "Documenti_IRC" / "Python" / "_config" / "ObsidianMD"
+APP_NAME = "ObsidianMdCopy"
+
+# Cartella config canonica (allineata alla convenzione _Config/<AppName>/)
+_DROPBOX_PYTHON = Path.home() / "Library/CloudStorage/Dropbox/Documenti_IRC/Python"
+CONFIG_DIR  = _DROPBOX_PYTHON / "_Config" / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "config.json"
+
+# Cartella legacy (vecchio stile _config/ObsidianMD) — usata solo per migrazione one-shot
+_LEGACY_CONFIG_DIR  = _DROPBOX_PYTHON / "_config" / "ObsidianMD"
+_LEGACY_CONFIG_FILE = _LEGACY_CONFIG_DIR / "config.json"
 
 DEFAULT_SRC = str(Path.home() / "Library/CloudStorage/Dropbox/Documenti_IRC/Viaggi")
 DEFAULT_DST = str(Path.home() / "Library/Mobile Documents/iCloud~md~obsidian/Documents/Viaggi")
@@ -82,14 +84,26 @@ def _path_from_cfg(s: str) -> str:
     return str(Path.home() / p)
 
 def load_config() -> dict:
-    if CONFIG_FILE.exists():
+    # Migrazione one-shot: se il config canonico non esiste ma quello legacy sì,
+    # sposta il file nella nuova posizione e continua normalmente.
+    if not CONFIG_FILE.exists() and _LEGACY_CONFIG_FILE.exists():
         try:
-            cfg = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-            if "src" in cfg: cfg["src"] = _path_from_cfg(cfg["src"])
-            if "dst" in cfg: cfg["dst"] = _path_from_cfg(cfg["dst"])
-            return cfg
+            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            import shutil as _shutil
+            _shutil.copy2(_LEGACY_CONFIG_FILE, CONFIG_FILE)
         except Exception:
-            pass
+            pass  # fallback: legge dal legacy se la copia fallisce
+
+    # Prova canonico, poi legacy come fallback
+    for candidate in (CONFIG_FILE, _LEGACY_CONFIG_FILE):
+        if candidate.exists():
+            try:
+                cfg = json.loads(candidate.read_text(encoding="utf-8"))
+                if "src" in cfg: cfg["src"] = _path_from_cfg(cfg["src"])
+                if "dst" in cfg: cfg["dst"] = _path_from_cfg(cfg["dst"])
+                return cfg
+            except Exception:
+                pass
     return {"src": DEFAULT_SRC, "dst": DEFAULT_DST, "flat": False}
 
 
@@ -343,7 +357,7 @@ class CheckboxTree(ttk.Frame):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Obsidian MD Copy")
+        self.title(f"Obsidian MD Copy v{VERSION}")
         self.resizable(True, True)
         self.minsize(800, 540)
         self.cfg = load_config()
@@ -467,6 +481,17 @@ class App(tk.Tk):
         if not src.exists():
             messagebox.showerror("Errore", f"Cartella sorgente non trovata:\n{src}")
             return
+        if not dst.exists():
+            risposta = messagebox.askyesno(
+                "Destinazione non trovata",
+                f"La cartella destinazione non esiste:\n{dst}\n\nCrearla?")
+            if not risposta:
+                return
+            try:
+                dst.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                messagebox.showerror("Errore", f"Impossibile creare la cartella:\n{e}")
+                return
 
         self._save_config()
         self.lbl_status.config(text="Scansione in corso…")
@@ -491,6 +516,20 @@ class App(tk.Tk):
         src_root = Path(self.var_src.get())
         dst_root = Path(self.var_dst.get())
         flat     = self.var_flat.get()
+
+        # In modalità flat: avvisa se ci sono nomi duplicati tra i file selezionati
+        if flat:
+            names = [fp.name for fp in files]
+            duplicati = [n for n in set(names) if names.count(n) > 1]
+            if duplicati:
+                lista = "\n".join(f"  • {n}" for n in sorted(set(duplicati)))
+                risposta = messagebox.askyesno(
+                    "Attenzione — nomi duplicati",
+                    f"In modalità flat questi nomi compaiono in più cartelle "
+                    f"e si sovrascriverebbero a vicenda:\n\n{lista}\n\n"
+                    f"Procedere comunque?")
+                if not risposta:
+                    return
 
         copied = skipped = errors = 0
         log_lines = []
